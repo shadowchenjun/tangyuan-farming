@@ -1,0 +1,13 @@
+{
+  "name": "tangyuan-farming",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "cd frontend && pnpm dev",
+    "build": "cd frontend && pnpm build",
+    "preview": "cd frontend && pnpm preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.99.2"
+  }
+}
