@@ -12,7 +12,7 @@ export default defineConfig({
   server: {
     port: 3000,
     host: '0.0.0.0',
-    allowedHosts: ['farm.lobstermaster.me'],
+    allowedHosts: ['farm.lobstermaster.me', 'farm.benlai.com'],
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
