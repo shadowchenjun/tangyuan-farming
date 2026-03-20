@@ -94,12 +94,8 @@ async function sendSMSAliyun(phone, code) {
   const { aliyun } = SMS_CONFIG
 
   if (!aliyun.accessKeyId || !aliyun.accessKeySecret || !aliyun.signName || !aliyun.templateCode) {
-    console.log(`[SMS] 开发模式: phone=${phone}, code=${code}`)
     return true
   }
-
-  // 实际项目中对接阿里云短信API
-  console.log(`[SMS] 阿里云发送: phone=${phone}, code=${code}`)
   return true
 }
 
@@ -111,7 +107,6 @@ async function sendSMS(phone) {
     return sendSMSAliyun(phone, code)
   }
 
-  console.log(`[SMS] 短信发送: phone=${phone}, code=${code}`)
   return true
 }
 

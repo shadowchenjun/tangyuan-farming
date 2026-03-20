@@ -1,4 +1,4 @@
-import axios from 'axios'
+import axios, { AxiosResponse } from 'axios'
 
 const API_BASE_URL = '/api'  // 使用相对路径，走 vite 代理
 
@@ -11,9 +11,9 @@ const api = axios.create({
   }
 })
 
-// 响应拦截器 - 处理错误
+// 响应拦截器 - 处理错误，直接返回data
 api.interceptors.response.use(
-  response => response.data,
+  (response: AxiosResponse) => response.data,
   error => {
     console.error('API Error:', error)
     return Promise.reject(error)

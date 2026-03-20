@@ -134,7 +134,6 @@ async function sendSMSAliyun(phone, code) {
   // )
 
   // 开发环境直接返回成功
-  console.log(`[SMS] 阿里云短信发送: phone=${phone}, code=${code}`)
   return true
 }
 
@@ -152,7 +151,6 @@ async function sendSMSTencent(phone, code) {
   // 注意：需要安装 tencentcloud-sdk短信服务
   // 此处为示例实现
 
-  console.log(`[SMS] 腾讯云短信发送: phone=${phone}, code=${code}`)
   return true
 }
 

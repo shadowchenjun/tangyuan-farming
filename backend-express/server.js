@@ -143,11 +143,8 @@ async function sendSMSAliyun(phone, code) {
   const { aliyun } = SMS_CONFIG
 
   if (!aliyun.accessKeyId || !aliyun.accessKeySecret) {
-    console.log(`[SMS] 开发模式: phone=${phone}, code=${code}`)
     return true
   }
-
-  console.log(`[SMS] 阿里云发送: phone=${phone}`)
   return true
 }
 
@@ -169,7 +166,6 @@ async function verifyCode(phone, code) {
 // ==================== 数据库初始化 ====================
 
 async function initDatabase() {
-  console.log('[INFO] 初始化数据库...')
 
   const createUsersTable = `
     CREATE TABLE IF NOT EXISTS users (
@@ -413,12 +409,11 @@ async function initDatabase() {
     await supabase.rpc('exec_sql', { sql: createCouponsTable })
     await supabase.rpc('exec_sql', { sql: createSystemConfigsTable })
     await supabase.rpc('exec_sql', { sql: createOperationLogsTable })
-    console.log('[INFO] 数据库表已就绪')
 
     // 创建默认管理员
     await createDefaultAdmin()
   } catch (error) {
-    console.log('[INFO] 数据库表检查完成:', error.message)
+    // 数据库初始化错误，忽略
   }
 }
 
@@ -439,10 +434,9 @@ async function createDefaultAdmin() {
         role_name: '超级管理员',
         is_active: true
       }])
-      console.log('[INFO] 默认管理员已创建: admin / admin123456')
     }
   } catch (error) {
-    console.log('[INFO] 管理员检查完成')
+    // 管理员检查错误，忽略
   }
 }
 
@@ -1756,7 +1750,5 @@ app.post('/api/admin/traceability/records', adminAuth, async (req, res) => {
 
 // 启动服务器
 app.listen(PORT, '0.0.0.0', async () => {
-  console.log(`[INFO] 汤原农文旅云认养平台API running on http://0.0.0.0:${PORT}`)
-  console.log(`[INFO] 存储后端: Supabase`)
   await initDatabase()
 })
