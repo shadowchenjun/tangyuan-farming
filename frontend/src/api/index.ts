@@ -38,8 +38,10 @@ export const verifyOrder = (orderNo: string) => {
 }
 
 // 分配田地
-export const allocateLand = (userId: string, orderNo: string) => {
-  return api.post('/allocate-land', { user_id: userId, order_no: orderNo })
+export const allocateLand = (userId: string, orderNo: string, token: string) => {
+  return api.post('/allocate-land', { user_id: userId, order_no: orderNo }, {
+    headers: { Authorization: `Bearer ${token}` }
+  })
 }
 
 // 获取用户信息

@@ -1,9 +1,12 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+const allowedHosts = process.env.ALLOWED_HOSTS
+  ? process.env.ALLOWED_HOSTS.split(',')
+  : ['localhost', '127.0.0.1']
+
 export default defineConfig({
   plugins: [vue()],
-  // Vercel 部署配置
   base: '/',
   build: {
     outDir: 'dist',
@@ -12,10 +15,10 @@ export default defineConfig({
   server: {
     port: 3000,
     host: '0.0.0.0',
-    allowedHosts: ['farm.lobstermaster.me', 'farm.benlai.com'],
+    allowedHosts,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: process.env.API_TARGET || 'http://localhost:8000',
         changeOrigin: true
       }
     }

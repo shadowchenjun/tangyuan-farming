@@ -102,17 +102,18 @@ onMounted(() => {
 
 const handleClaim = async () => {
   const userStr = localStorage.getItem('user')
-  if (!userStr) {
+  const token = localStorage.getItem('token')
+  if (!userStr || !token) {
     ElMessage.warning('请先登录')
     router.push('/login')
     return
   }
-  
+
   const user = JSON.parse(userStr)
   loading.value = true
-  
+
   try {
-    const res = await allocateLand(user.id, orderInfo.value!.orderNo)
+    const res = await allocateLand(user.id, orderInfo.value!.orderNo, token)
     
     // 保存田地信息
     farmInfo.value = res.farm
