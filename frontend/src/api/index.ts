@@ -28,8 +28,8 @@ export const sendCode = (phone: string) => {
 }
 
 // 登录
-export const login = (phone: string, code: string, nickname?: string) => {
-  return api.post('/login', { phone, code, nickname })
+export const login = (phone: string, code: string) => {
+  return api.post('/login', { phone, code })
 }
 
 // 验证订单
@@ -50,13 +50,22 @@ export const getUserInfo = (userId: string) => {
 }
 
 // 获取用户田地列表
-export const getUserFarms = (userId: string) => {
-  return api.get(`/farms/${userId}`)
+export const getUserFarms = (userId: string, token?: string) => {
+  return api.get(`/farms/${userId}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  })
 }
 
 // 获取权益列表
 export const getRights = () => {
   return api.get('/rights')
+}
+
+// 更新用户信息
+export const updateUserInfo = (userId: string, data: any, token?: string) => {
+  return api.put(`/user/${userId}`, data, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  })
 }
 
 export default api

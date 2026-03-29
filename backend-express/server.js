@@ -171,8 +171,26 @@ async function initDatabase() {
     CREATE TABLE IF NOT EXISTS users (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       phone VARCHAR(20) NOT NULL UNIQUE,
+      nickname VARCHAR(50),
+      avatar VARCHAR(500),
       created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
+  `
+
+  const alterUsersTable = `
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS nickname VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS avatar VARCHAR(500);
+  `
+
+  const createUpdateUserNicknameFunc = `
+    CREATE OR REPLACE FUNCTION update_user_nickname(user_id UUID, new_nickname VARCHAR(50))
+    RETURNS SETOF users AS $$
+    BEGIN
+      UPDATE users SET nickname = new_nickname WHERE id = user_id;
+      RETURN QUERY SELECT * FROM users WHERE id = user_id;
+    END;
+    $$ LANGUAGE plpgsql SECURITY DEFINER;
   `
 
   const createFarmsTable = `
@@ -280,14 +298,29 @@ async function initDatabase() {
       config_id UUID REFERENCES adoption_configs(id),
       land_parcel_id UUID REFERENCES land_parcels(id),
       quantity INTEGER DEFAULT 1,
-      total_amount DECIMAL(10,2) NOT NULL,
+      total_amount DECIMAL(10,2) DEFAULT 0,
       status VARCHAR(20) DEFAULT 'pending',
       start_date TIMESTAMP WITH TIME ZONE,
       end_date TIMESTAMP WITH TIME ZONE,
       harvest_info TEXT,
       remark TEXT,
+      phone VARCHAR(20),
+      rice_qty INTEGER DEFAULT 100,
+      area DECIMAL(10,2) DEFAULT 10,
+      address TEXT,
+      year INTEGER,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
+  `
+
+  // 为已存在的 adoption_orders 表添加缺失的列
+  const alterAdoptionOrdersTable = `
+    ALTER TABLE adoption_orders
+    ADD COLUMN IF NOT EXISTS phone VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS rice_qty INTEGER DEFAULT 100,
+    ADD COLUMN IF NOT EXISTS area DECIMAL(10,2) DEFAULT 10,
+    ADD COLUMN IF NOT EXISTS address TEXT,
+    ADD COLUMN IF NOT EXISTS year INTEGER;
   `
 
   const createDeviceTypesTable = `
@@ -394,6 +427,8 @@ async function initDatabase() {
 
   try {
     await supabase.rpc('exec_sql', { sql: createUsersTable })
+    await supabase.rpc('exec_sql', { sql: alterUsersTable })
+    await supabase.rpc('exec_sql', { sql: createUpdateUserNicknameFunc })
     await supabase.rpc('exec_sql', { sql: createFarmsTable })
     await supabase.rpc('exec_sql', { sql: createSmsCodesTable })
     await supabase.rpc('exec_sql', { sql: createAdminRolesTable })
@@ -402,6 +437,7 @@ async function initDatabase() {
     await supabase.rpc('exec_sql', { sql: createAdoptionCategoriesTable })
     await supabase.rpc('exec_sql', { sql: createAdoptionConfigsTable })
     await supabase.rpc('exec_sql', { sql: createAdoptionOrdersTable })
+    await supabase.rpc('exec_sql', { sql: alterAdoptionOrdersTable })
     await supabase.rpc('exec_sql', { sql: createDeviceTypesTable })
     await supabase.rpc('exec_sql', { sql: createDevicesTable })
     await supabase.rpc('exec_sql', { sql: createTraceabilityConfigsTable })
@@ -539,25 +575,55 @@ app.post('/api/login', async (req, res) => {
 })
 
 // 验证订单
-app.post('/api/verify-order', (req, res) => {
-  const { order_no } = req.body
+app.post('/api/verify-order', async (req, res) => {
+  const { order_no, phone, rice_qty, area, address } = req.body
 
-  if (!order_no || order_no.length !== 6) {
-    return res.json({ valid: false, message: "订单编号无效" })
+  if (!order_no) {
+    return res.json({ valid: false, message: "订单编号不能为空" })
   }
 
-  // 模拟验证 - 实际需要对接订单系统
-  res.json({
-    valid: true,
-    order: {
-      order_no,
-      phone: "138****8888",
-      rice_qty: 100,
-      area: 10,
-      address: "黑龙江省汤原县胜利乡",
-      year: new Date().getFullYear()
+  try {
+    // 首先尝试查询本来生活订单（通过 out_trade_no 后6位 / verification_code）
+    const { data: benlaiOrder } = await supabase
+      .from('benlai_orders')
+      .select('*')
+      .eq('verification_code', order_no)
+      .single()
+
+    if (benlaiOrder) {
+      // 找到了本来生活订单，返回订单信息
+      return res.json({
+        valid: true,
+        order: {
+          id: benlaiOrder.id,
+          order_no: benlaiOrder.out_trade_no,
+          phone: benlaiOrder.receive_phone,
+          contact: benlaiOrder.receive_contact,
+          province: benlaiOrder.province,
+          city: benlaiOrder.city,
+          county: benlaiOrder.county,
+          address: benlaiOrder.receive_address,
+          order_price: parseFloat(benlaiOrder.order_price),
+          ship_price: parseFloat(benlaiOrder.ship_price),
+          order_status: benlaiOrder.order_status,
+          order_status_remark: benlaiOrder.order_status_remark,
+          order_detail: benlaiOrder.order_detail ? JSON.parse(benlaiOrder.order_detail) : [],
+          source: 'benlai',
+          year: new Date().getFullYear()
+        }
+      })
     }
-  })
+
+    // 如果本来生活订单没找到，返回无效
+    // 注意：现在只支持本来生活订单验证，不再自动创建本地订单
+    return res.json({
+      valid: false,
+      message: "订单编号无效，请确认后重新输入"
+    })
+  } catch (err) {
+    console.error('验证订单异常:', err)
+    res.status(500).json({ valid: false, message: "服务器错误" })
+  }
 })
 
 // 分配田地
@@ -579,6 +645,10 @@ app.post('/api/allocate-land', async (req, res) => {
     return res.status(401).json({ message: "用户不存在" })
   }
 
+  if (!order_no) {
+    return res.status(400).json({ message: "订单号必填" })
+  }
+
   try {
     const { data: user, error: userError } = await supabase
       .from('users')
@@ -590,30 +660,97 @@ app.post('/api/allocate-land', async (req, res) => {
       return res.status(401).json({ message: "用户不存在" })
     }
 
+    // 1. 获取本来生活订单信息
+    const { data: benlaiOrder, error: orderError } = await supabase
+      .from('benlai_orders')
+      .select('*')
+      .eq('out_trade_no', order_no)
+      .single()
+
+    if (orderError || !benlaiOrder) {
+      return res.status(404).json({ message: "订单不存在" })
+    }
+
+    // 2. 从订单详情计算总数量，计算认养亩数 (quantity / 20)
+    let totalQuantity = 0
+    try {
+      let orderDetail = benlaiOrder.order_detail
+      // 处理双重JSON编码
+      if (typeof orderDetail === 'string') {
+        orderDetail = JSON.parse(orderDetail)
+      }
+      // 如果解析后还是字符串，再解析一次
+      if (typeof orderDetail === 'string') {
+        orderDetail = JSON.parse(orderDetail)
+      }
+      if (Array.isArray(orderDetail)) {
+        totalQuantity = orderDetail.reduce((sum, item) => sum + (item.quantity || 0), 0)
+      }
+    } catch (e) {
+      console.error('解析订单详情失败:', e)
+      totalQuantity = 0
+    }
+    const calculatedArea = totalQuantity > 0 ? totalQuantity / 20 : 10
+
+    // 3. 从土地管理表获取一个可用的土地
+    const { data: availableLands, error: landError } = await supabase
+      .from('land_parcels')
+      .select('*')
+      .eq('status', 'available')
+      .order('created_at', { ascending: true })
+      .limit(1)
+
+    if (landError || !availableLands || availableLands.length === 0) {
+      return res.status(400).json({ message: "暂无可用土地，请联系管理员" })
+    }
+
+    const selectedLand = availableLands[0]
+
+    // 4. 生成田地编号 = TY-年份-订单尾号后6位
     const year = new Date().getFullYear()
-    const landNo = `TY-${year}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
+    const orderSuffix = order_no.slice(-6).padStart(6, '0')
+    const landNo = `TY-${year}-${orderSuffix}`
+
+    // 5. 生成DDC ID
     const ddcId = `0x${Math.random().toString(36).substring(2, 14)}`
 
+    // 6. 创建农场记录
     const { data: farm, error: farmError } = await supabase
       .from('farms')
       .insert([{
         user_id,
-        land_no: landNo,
-        area: 10,
-        address: "黑龙江省汤原县胜利乡",
+        land_no: landNo,                      // 使用订单尾号生成的编号
+        area: calculatedArea,                  // 使用计算的面积
+        address: selectedLand.location,       // 使用土地管理的地址
         year,
         ddc_id: ddcId,
-        order_no: order_no || null
+        order_no: order_no
       }])
       .select()
       .single()
 
     if (farmError) {
+      console.error('分配田地失败:', farmError)
       return res.status(500).json({ message: "分配失败" })
     }
 
-    res.json({ farm })
+    // 7. 更新土地状态为已分配
+    await supabase
+      .from('land_parcels')
+      .update({ status: 'allocated' })
+      .eq('id', selectedLand.id)
+
+    res.json({
+      farm,
+      land: {
+        code: landNo,
+        name: selectedLand.name,
+        location: selectedLand.location,
+        area: calculatedArea
+      }
+    })
   } catch (err) {
+    console.error('分配田地异常:', err)
     res.status(500).json({ message: "分配失败" })
   }
 })
@@ -645,6 +782,51 @@ app.get('/api/user/:userId', async (req, res) => {
     res.json(user)
   } catch (err) {
     res.status(500).json({ error: "查询失败" })
+  }
+})
+
+// 更新用户信息
+app.put('/api/user/:userId', async (req, res) => {
+  const { userId } = req.params
+  const { nickname, avatar } = req.body
+  const authHeader = req.headers.authorization
+
+  if (authHeader) {
+    const token = authHeader.split(' ')[1]
+    const tokenUserId = verifyToken(token)
+    if (tokenUserId !== userId) {
+      return res.status(401).json({ error: "无权访问" })
+    }
+  }
+
+  try {
+    const updateData = {}
+    if (nickname !== undefined) updateData.nickname = nickname
+    if (avatar !== undefined) updateData.avatar = avatar
+
+    if (Object.keys(updateData).length === 0) {
+      return res.json({ error: "没有要更新的字段" })
+    }
+
+    const { data: user, error } = await supabase
+      .from('users')
+      .update(updateData)
+      .eq('id', userId)
+      .select()
+      .single()
+
+    if (error) {
+      console.error('更新用户失败:', error)
+      // 如果是因为列不存在，尝试用 raw 更新
+      if (error.code === 'PGRST204') {
+        return res.status(400).json({ error: "用户表缺少昵称列，请联系管理员" })
+      }
+      return res.status(500).json({ error: "更新失败" })
+    }
+
+    res.json(user)
+  } catch (err) {
+    res.status(500).json({ error: "更新失败" })
   }
 })
 
@@ -1745,6 +1927,255 @@ app.post('/api/admin/traceability/records', adminAuth, async (req, res) => {
     res.json({ message: "创建成功", item: recordData })
   } catch (err) {
     res.status(500).json({ message: "服务器错误" })
+  }
+})
+
+// ==================== 本来生活订单管理 ====================
+
+// 获取本来生活订单列表
+app.get('/api/admin/benlai/orders', adminAuth, async (req, res) => {
+  const { page = 1, page_size = 20, status, phone, out_trade_no } = req.query
+
+  try {
+    let query = supabase
+      .from('benlai_orders')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+
+    if (status) {
+      query = query.eq('order_status', status)
+    }
+    if (phone) {
+      query = query.eq('receive_phone', phone)
+    }
+    if (out_trade_no) {
+      query = query.like('out_trade_no', `%${out_trade_no}%`)
+    }
+
+    const offset = (parseInt(page) - 1) * parseInt(page_size)
+    query = query.range(offset, offset + parseInt(page_size) - 1)
+
+    const { data, error, count } = await query
+
+    if (error) return res.status(400).json({ message: "查询失败" })
+    res.json({
+      items: data || [],
+      total: count || 0,
+      page: parseInt(page),
+      page_size: parseInt(page_size)
+    })
+  } catch (err) {
+    res.status(500).json({ message: "服务器错误" })
+  }
+})
+
+// 获取单个本来生活订单
+app.get('/api/admin/benlai/orders/:id', adminAuth, async (req, res) => {
+  const { id } = req.params
+
+  try {
+    const { data, error } = await supabase
+      .from('benlai_orders')
+      .select('*')
+      .eq('id', id)
+      .single()
+
+    if (error || !data) return res.status(404).json({ message: "订单不存在" })
+    res.json(data)
+  } catch (err) {
+    res.status(500).json({ message: "服务器错误" })
+  }
+})
+
+// 创建本来生活订单（模拟数据）
+app.post('/api/admin/benlai/orders', adminAuth, async (req, res) => {
+  const {
+    out_trade_no, order_id, receive_contact, receive_phone,
+    province, city, county, receive_address, order_price,
+    ship_price, order_status, order_status_remark, order_detail
+  } = req.body
+
+  if (!out_trade_no) {
+    return res.status(400).json({ message: "商户订单号必填" })
+  }
+
+  try {
+    // 生成验证码（out_trade_no后6位）
+    const verification_code = out_trade_no.slice(-6)
+
+    const { data, error } = await supabase
+      .from('benlai_orders')
+      .insert([{
+        out_trade_no,
+        order_id,
+        receive_contact,
+        receive_phone,
+        province,
+        city,
+        county,
+        receive_address,
+        order_price: order_price || 0,
+        ship_price: ship_price || 0,
+        order_status: order_status || 'ORDER_STATUS_INITIAL',
+        order_status_remark: order_status_remark || '订单初始',
+        order_detail: order_detail ? JSON.stringify(order_detail) : null,
+        verification_code
+      }])
+      .select()
+      .single()
+
+    if (error) {
+      if (error.code === '23505') {
+        return res.status(400).json({ message: "订单号已存在" })
+      }
+      return res.status(400).json({ message: "创建失败" })
+    }
+    res.json({ message: "创建成功", item: data })
+  } catch (err) {
+    res.status(500).json({ message: "服务器错误" })
+  }
+})
+
+// 批量创建本来生活订单（模拟数据）
+app.post('/api/admin/benlai/orders/batch', adminAuth, async (req, res) => {
+  const { orders } = req.body
+
+  if (!orders || !Array.isArray(orders) || orders.length === 0) {
+    return res.status(400).json({ message: "订单数据必填" })
+  }
+
+  try {
+    const insertData = orders.map(order => {
+      const verification_code = order.out_trade_no.slice(-6)
+      return {
+        out_trade_no: order.out_trade_no,
+        order_id: order.order_id,
+        receive_contact: order.receive_contact,
+        receive_phone: order.receive_phone,
+        province: order.province,
+        city: order.city,
+        county: order.county,
+        receive_address: order.receive_address,
+        order_price: order.order_price || 0,
+        ship_price: order.ship_price || 0,
+        order_status: order.order_status || 'ORDER_STATUS_INITIAL',
+        order_status_remark: order.order_status_remark || '订单初始',
+        order_detail: order.order_detail ? JSON.stringify(order.order_detail) : null,
+        do_list: order.do_list ? JSON.stringify(order.do_list) : null,
+        box_list: order.box_list ? JSON.stringify(order.box_list) : null,
+        create_date: order.create_date,
+        expire_date: order.expire_date,
+        verification_code
+      }
+    })
+
+    const { data, error } = await supabase
+      .from('benlai_orders')
+      .insert(insertData)
+      .select()
+
+    if (error) return res.status(400).json({ message: "批量创建失败", detail: error.message })
+    res.json({ message: "创建成功", items: data })
+  } catch (err) {
+    res.status(500).json({ message: "服务器错误" })
+  }
+})
+
+// 更新本来生活订单状态
+app.put('/api/admin/benlai/orders/:id', adminAuth, async (req, res) => {
+  const { id } = req.params
+  const { order_status, order_status_remark } = req.body
+
+  try {
+    const { data, error } = await supabase
+      .from('benlai_orders')
+      .update({
+        order_status,
+        order_status_remark,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single()
+
+    if (error) return res.status(400).json({ message: "更新失败" })
+    res.json({ message: "更新成功", item: data })
+  } catch (err) {
+    res.status(500).json({ message: "服务器错误" })
+  }
+})
+
+// 删除本来生活订单
+app.delete('/api/admin/benlai/orders/:id', adminAuth, async (req, res) => {
+  const { id } = req.params
+
+  try {
+    const { error } = await supabase
+      .from('benlai_orders')
+      .delete()
+      .eq('id', id)
+
+    if (error) return res.status(400).json({ message: "删除失败" })
+    res.json({ message: "删除成功" })
+  } catch (err) {
+    res.status(500).json({ message: "服务器错误" })
+  }
+})
+
+// 根据out_trade_no查询订单（用于前端验证）
+app.get('/api/benlai/order/query', async (req, res) => {
+  const { out_trade_no } = req.query
+
+  if (!out_trade_no) {
+    return res.status(400).json({ code: -1, msg: "订单号必填" })
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('benlai_orders')
+      .select('*')
+      .eq('out_trade_no', out_trade_no)
+      .single()
+
+    if (error || !data) {
+      return res.json({
+        code: -1,
+        msg: "失败",
+        value: {
+          sub_code: "0804_-1",
+          sub_msg: "订单不存在"
+        }
+      })
+    }
+
+    // 转换数据格式以匹配本来生活接口
+    res.json({
+      code: 0,
+      msg: "",
+      value: {
+        out_trade_no: data.out_trade_no,
+        order_id: data.order_id,
+        receive_contact: data.receive_contact,
+        receive_phone: data.receive_phone,
+        province: data.province,
+        city: data.city,
+        county: data.county,
+        receive_address: data.receive_address,
+        order_price: parseFloat(data.order_price),
+        ship_price: parseFloat(data.ship_price),
+        order_discount: parseFloat(data.order_discount || 0),
+        order_status: data.order_status,
+        order_status_remark: data.order_status_remark,
+        create_date: data.create_date,
+        expire_date: data.expire_date,
+        order_detail: data.order_detail ? JSON.parse(data.order_detail) : [],
+        do_list: data.do_list ? JSON.parse(data.do_list) : [],
+        box_list: data.box_list ? JSON.parse(data.box_list) : [],
+        order_invoice: data.order_invoice ? JSON.parse(data.order_invoice) : {}
+      }
+    })
+  } catch (err) {
+    res.status(500).json({ code: -1, msg: "服务器错误" })
   }
 })
 

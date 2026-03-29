@@ -29,15 +29,6 @@
           </el-input>
         </el-form-item>
         
-        <el-form-item prop="nickname">
-          <el-input 
-            v-model="form.nickname" 
-            placeholder="请输入昵称（2-10字符）"
-            size="large"
-            :prefix-icon="User"
-          />
-        </el-form-item>
-        
         <el-checkbox v-model="form.agree">
           我已阅读并同意相关条款
         </el-checkbox>
@@ -64,9 +55,9 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Phone, Lock, User } from '@element-plus/icons-vue'
+import { Phone, Lock } from '@element-plus/icons-vue'
 import type { FormInstance } from 'element-plus'
-import { sendCode as sendCodeApi, login as loginApi } from '../api'
+import { sendCode as sendCodeApi, login as loginApi, getUserFarms } from '../api'
 
 const router = useRouter()
 const formRef = ref<FormInstance>()
@@ -76,7 +67,6 @@ const countdown = ref(0)
 const form = reactive({
   phone: '',
   code: '',
-  nickname: '',
   agree: false
 })
 
@@ -88,10 +78,6 @@ const rules = {
   code: [
     { required: true, message: '请输入验证码', trigger: 'blur' },
     { len: 6, message: '验证码为6位数字', trigger: 'blur' }
-  ],
-  nickname: [
-    { required: true, message: '请输入昵称', trigger: 'blur' },
-    { min: 2, max: 10, message: '昵称2-10字符', trigger: 'blur' }
   ]
 }
 
@@ -120,17 +106,45 @@ const handleLogin = async () => {
     ElMessage.warning('请先阅读并同意相关条款')
     return
   }
-  
+
   await formRef.value?.validate()
   loading.value = true
-  
+
   try {
-    const res = await loginApi(form.phone, form.code, form.nickname)
-    
+    const res = await loginApi(form.phone, form.code)
+
     // 保存用户信息和token
     localStorage.setItem('token', res.token)
     localStorage.setItem('user', JSON.stringify(res.user))
-    
+
+    // 检查用户是否有昵称和认养记录
+    const user = res.user
+    const hasNickname = user.nickname && user.nickname.trim() !== ''
+
+    // 如果没有昵称或者没有认养记录，跳转到活动介绍页
+    if (!hasNickname) {
+      ElMessage.success('登录成功，请先完善信息')
+      router.push('/farming')
+      return
+    }
+
+    // 检查是否有认养记录
+    try {
+      const farmsRes = await getUserFarms(user.id, res.token)
+      const hasFarm = farmsRes.farms && farmsRes.farms.length > 0
+
+      if (!hasFarm) {
+        ElMessage.success('登录成功')
+        router.push('/farming')
+        return
+      }
+    } catch (e) {
+      // API错误，默认跳转到活动页
+      ElMessage.success('登录成功')
+      router.push('/farming')
+      return
+    }
+
     ElMessage.success('登录成功')
     router.push('/credentials')
   } catch (error: any) {
