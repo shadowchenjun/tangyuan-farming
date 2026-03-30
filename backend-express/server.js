@@ -591,7 +591,40 @@ app.post('/api/verify-order', async (req, res) => {
       .single()
 
     if (benlaiOrder) {
-      // 找到了本来生活订单，返回订单信息
+      // 计算田地编号 = TY-年份-订单尾号后6位
+      const year = new Date().getFullYear()
+      const orderSuffix = order_no.slice(-6).padStart(6, '0')
+      const landNo = `TY-${year}-${orderSuffix}`
+
+      // 计算认养亩数 (quantity / 20)
+      let totalQuantity = 0
+      try {
+        let orderDetail = benlaiOrder.order_detail
+        if (typeof orderDetail === 'string') {
+          orderDetail = JSON.parse(orderDetail)
+        }
+        if (typeof orderDetail === 'string') {
+          orderDetail = JSON.parse(orderDetail)
+        }
+        if (Array.isArray(orderDetail)) {
+          totalQuantity = orderDetail.reduce((sum, item) => sum + (item.quantity || 0), 0)
+        }
+      } catch (e) {
+        totalQuantity = 0
+      }
+      const calculatedArea = totalQuantity > 0 ? totalQuantity / 20 : 10
+
+      // 从土地管理表获取一个可用土地
+      const { data: availableLands } = await supabase
+        .from('land_parcels')
+        .select('*')
+        .eq('status', 'available')
+        .order('created_at', { ascending: true })
+        .limit(1)
+
+      const landInfo = availableLands && availableLands.length > 0 ? availableLands[0] : null
+
+      // 找到了本来生活订单，返回订单信息（含预分配田地）
       return res.json({
         valid: true,
         order: {
@@ -602,14 +635,18 @@ app.post('/api/verify-order', async (req, res) => {
           province: benlaiOrder.province,
           city: benlaiOrder.city,
           county: benlaiOrder.county,
-          address: benlaiOrder.receive_address,
+          address: landInfo ? landInfo.location : '黑龙江省汤原县',
           order_price: parseFloat(benlaiOrder.order_price),
           ship_price: parseFloat(benlaiOrder.ship_price),
           order_status: benlaiOrder.order_status,
           order_status_remark: benlaiOrder.order_status_remark,
           order_detail: benlaiOrder.order_detail ? JSON.parse(benlaiOrder.order_detail) : [],
           source: 'benlai',
-          year: new Date().getFullYear()
+          year: year,
+          // 新增田地信息
+          land_no: landNo,
+          land_area: calculatedArea,
+          land_location: landInfo ? landInfo.location : null
         }
       })
     }
@@ -711,6 +748,35 @@ app.post('/api/allocate-land', async (req, res) => {
     const orderSuffix = order_no.slice(-6).padStart(6, '0')
     const landNo = `TY-${year}-${orderSuffix}`
 
+    // 4.5 检查该订单是否已经分配过土地（优先选择 TY- 开头的记录）
+    let existingFarm = null
+    try {
+      const { data, error } = await supabase
+        .from('farms')
+        .select('*')
+        .eq('order_no', order_no)
+        .order('land_no', { ascending: false }) // TY- 开头的排前面
+        .limit(1)
+
+      if (!error && data && data.length > 0) {
+        existingFarm = data[0]
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    if (existingFarm) {
+      // 订单已分配过，直接返回已有结果
+      return res.json({
+        farm: existingFarm,
+        land: {
+          code: existingFarm.land_no,
+          area: existingFarm.area,
+          location: existingFarm.address
+        }
+      })
+    }
+
     // 5. 生成DDC ID
     const ddcId = `0x${Math.random().toString(36).substring(2, 14)}`
 
@@ -730,6 +796,24 @@ app.post('/api/allocate-land', async (req, res) => {
       .single()
 
     if (farmError) {
+      // 如果是唯一约束冲突，可能是重复分配，返回已有记录
+      if (farmError.code === '23505') {
+        const { data: existingData } = await supabase
+          .from('farms')
+          .select('*')
+          .eq('land_no', landNo)
+          .limit(1)
+        if (existingData && existingData.length > 0) {
+          return res.json({
+            farm: existingData[0],
+            land: {
+              code: existingData[0].land_no,
+              area: existingData[0].area,
+              location: existingData[0].address
+            }
+          })
+        }
+      }
       console.error('分配田地失败:', farmError)
       return res.status(500).json({ message: "分配失败" })
     }

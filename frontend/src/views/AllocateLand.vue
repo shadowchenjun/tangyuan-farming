@@ -30,19 +30,19 @@
         <div class="land-info">
           <div class="info-row">
             <span class="label">认养田地面积：</span>
-            <span class="value highlight">{{ orderInfo?.landSize }}亩</span>
+            <span class="value highlight">{{ orderInfo?.landSize || farmInfo?.area || 0 }}亩</span>
           </div>
           <div class="info-row">
             <span class="label">田地编号：</span>
-            <span class="value">TY-{{ orderInfo?.year }}-001</span>
+            <span class="value">{{ orderInfo?.land_no || farmInfo?.land_no || '待分配' }}</span>
           </div>
           <div class="info-row">
             <span class="label">田地地址：</span>
-            <span class="value">{{ orderInfo?.address }}</span>
+            <span class="value">{{ orderInfo?.land_location || orderInfo?.address || farmInfo?.address || '待分配' }}</span>
           </div>
           <div class="info-row">
             <span class="label">认养周期：</span>
-            <span class="value">{{ orderInfo?.year }}年度</span>
+            <span class="value">{{ orderInfo?.year || farmInfo?.year || new Date().getFullYear() }}年度</span>
           </div>
         </div>
         
@@ -114,11 +114,18 @@ const handleClaim = async () => {
 
   try {
     const res = await allocateLand(user.id, orderInfo.value!.orderNo, token)
-    
-    // 保存田地信息
+
+    // 更新田地信息
     farmInfo.value = res.farm
+
+    // 更新 orderInfo 中的田地信息
+    if (orderInfo.value) {
+      orderInfo.value.landSize = res.farm.area
+      orderInfo.value.address = res.farm.address
+      localStorage.setItem('orderInfo', JSON.stringify(orderInfo.value))
+    }
     localStorage.setItem('farmInfo', JSON.stringify(res.farm))
-    
+
     ElMessage.success('领取成功！')
     router.push('/credentials')
   } catch (error: any) {

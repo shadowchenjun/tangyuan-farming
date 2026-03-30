@@ -59,19 +59,40 @@ const rules = {
 const handleVerify = async () => {
   await formRef.value?.validate()
   loading.value = true
-  
+
   try {
     const res = await verifyOrder(form.orderNo)
-    
+
     if (res.valid) {
-      // 存储订单信息
+      // 计算订单商品总数量
+      let totalQuantity = 0
+      let orderDetail = res.order.order_detail
+      if (typeof orderDetail === 'string') {
+        try { orderDetail = JSON.parse(orderDetail) } catch (e) { orderDetail = [] }
+      }
+      if (Array.isArray(orderDetail)) {
+        totalQuantity = orderDetail.reduce((sum, item) => sum + (item.quantity || 0), 0)
+      }
+
+      // 计算认养亩数 (quantity / 20)
+      const landSize = totalQuantity > 0 ? (totalQuantity / 20).toFixed(2) : 0
+      // 假设1份商品 = 10斤大米
+      const riceQty = totalQuantity * 10
+
+      // 存储订单信息（包含预分配的田地信息）
       localStorage.setItem('orderInfo', JSON.stringify({
-        orderNo: form.orderNo,
+        orderNo: res.order.order_no || form.orderNo,
         phone: res.order.phone,
-        riceQty: res.order.rice_qty,
-        landSize: res.order.area,
-        address: res.order.address,
-        year: res.order.year
+        riceQty: riceQty,
+        landSize: landSize,
+        address: res.order.land_location || res.order.address,
+        year: res.order.year,
+        source: res.order.source,
+        order_detail: orderDetail,
+        // 预分配的田地信息
+        land_no: res.order.land_no,
+        land_area: res.order.land_area,
+        land_location: res.order.land_location
       }))
       ElMessage.success('验证成功')
       router.push('/allocate')
