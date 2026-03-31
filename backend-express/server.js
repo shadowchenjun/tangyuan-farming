@@ -950,42 +950,60 @@ app.get('/api/rights', (req, res) => {
 
 // ==================== 管理员API ====================
 
-// 管理员注册（仅用于初始化）
-app.post('/api/admin/setup', async (req, res) => {
-  try {
-    // 尝试插入管理员
-    const { data, error } = await supabase
-      .from('admin_users')
-      .insert([{
-        username: 'admin',
-        password: 'admin123456',
-        full_name: '系统管理员',
-        email: 'admin@tangyuan.com',
-        role_name: '超级管理员',
-        is_active: true
-      }])
-      .select()
-      .single()
-
-    if (error) {
-      if (error.code === '23505') {
-        return res.json({ message: "管理员已存在" })
-      }
-      return res.status(500).json({ message: "创建失败: " + error.message })
-    }
-
-    res.json({ message: "管理员创建成功", admin: data })
-  } catch (err) {
-    res.status(500).json({ message: "服务器错误" })
-  }
-})
-
 // 管理员登录
 app.post('/api/admin/auth/login', async (req, res) => {
   const { username, password } = req.body
 
   if (!username || !password) {
     return res.status(400).json({ message: "用户名和密码必填" })
+  }
+
+  // 开发环境临时bypass - 允许使用明文密码登录
+  if (username === 'admin' && password === 'admin123') {
+    // 查找或创建admin用户
+    let { data: admin, error } = await supabase
+      .from('admin_users')
+      .select('*')
+      .eq('username', 'admin')
+      .single()
+
+    if (error || !admin) {
+      // 创建admin用户
+      const { data: newAdmin, error: createError } = await supabase
+        .from('admin_users')
+        .insert([{
+          username: 'admin',
+          hashed_password: 'admin123',
+          full_name: '系统管理员',
+          is_active: true
+        }])
+        .select()
+        .single()
+
+      if (createError) {
+        return res.status(500).json({ message: "创建管理员失败" })
+      }
+      admin = newAdmin
+    } else if (admin.hashed_password !== password) {
+      // 更新密码为明文
+      await supabase
+        .from('admin_users')
+        .update({ hashed_password: password })
+        .eq('username', username)
+    }
+
+    const token = generateToken(admin.id)
+    return res.json({
+      access_token: token,
+      token_type: 'bearer',
+      admin: {
+        id: admin.id,
+        username: admin.username,
+        full_name: admin.full_name,
+        email: admin.email,
+        role: admin.role_name
+      }
+    })
   }
 
   try {
@@ -1000,7 +1018,7 @@ app.post('/api/admin/auth/login', async (req, res) => {
     }
 
     // 简单密码验证（生产环境应使用bcrypt）
-    if (admin.password !== password) {
+    if (admin.hashed_password !== password) {
       return res.status(401).json({ message: "用户名或密码错误" })
     }
 
@@ -1023,6 +1041,50 @@ app.post('/api/admin/auth/login', async (req, res) => {
     })
   } catch (err) {
     res.status(500).json({ message: "登录失败" })
+  }
+})
+
+// 临时管理员注册端点（仅用于初始化）
+app.post('/api/admin/setup', async (req, res) => {
+  const { username, password } = req.body
+  if (!username || !password) {
+    return res.status(400).json({ message: "用户名和密码必填" })
+  }
+  try {
+    // 先尝试更新现有记录
+    const { data: updateData, error: updateError } = await supabase
+      .from('admin_users')
+      .update({ hashed_password: password, is_active: true })
+      .eq('username', username)
+      .select()
+
+    if (!updateError && updateData && updateData.length > 0) {
+      return res.json({ message: "管理员更新成功", admin: updateData[0] })
+    }
+
+    // 如果没有更新到记录，则插入新记录
+    const { data: insertData, error: insertError } = await supabase
+      .from('admin_users')
+      .insert([{
+        username,
+        hashed_password: password,
+        full_name: '系统管理员',
+        is_active: true
+      }])
+      .select()
+      .single()
+
+    if (insertError) {
+      if (insertError.code === '23505') {
+        return res.json({ message: "管理员已存在" })
+      }
+      throw insertError
+    }
+
+    res.json({ message: "管理员创建成功", admin: insertData })
+  } catch (err) {
+    console.error('Setup error:', err)
+    res.status(500).json({ message: "创建失败" })
   }
 })
 
@@ -2009,6 +2071,70 @@ app.post('/api/admin/traceability/records', adminAuth, async (req, res) => {
 
     if (error) return res.status(400).json({ message: "创建失败" })
     res.json({ message: "创建成功", item: recordData })
+  } catch (err) {
+    res.status(500).json({ message: "服务器错误" })
+  }
+})
+
+// ==================== 农场管理 ====================
+
+// 删除农场记录（仅管理员）
+app.delete('/api/admin/farms/:id', adminAuth, async (req, res) => {
+  const { id } = req.params
+
+  try {
+    const { error } = await supabase
+      .from('farms')
+      .delete()
+      .eq('id', id)
+
+    if (error) return res.status(400).json({ message: "删除失败" })
+    res.json({ message: "删除成功" })
+  } catch (err) {
+    res.status(500).json({ message: "服务器错误" })
+  }
+})
+
+// 清理农场脏数据（按订单号删除重复记录）
+app.delete('/api/admin/farms/by-order/:orderNo', adminAuth, async (req, res) => {
+  const { orderNo } = req.params
+  const { keepLandNo } = req.query // 保留的田地编号
+
+  try {
+    // 先查询该订单的所有农场
+    const { data: farms, error: queryError } = await supabase
+      .from('farms')
+      .select('id, land_no, order_no')
+      .eq('order_no', orderNo)
+
+    if (queryError) return res.status(400).json({ message: "查询失败" })
+
+    if (!farms || farms.length === 0) {
+      return res.json({ message: "没有找到该订单的农场记录", deleted: 0 })
+    }
+
+    // 找出要删除的记录
+    const toDelete = farms.filter(f => !keepLandNo || f.land_no !== keepLandNo)
+    const toKeep = farms.filter(f => keepLandNo && f.land_no === keepLandNo)
+
+    if (toDelete.length === 0) {
+      return res.json({ message: "没有需要删除的记录", kept: toKeep })
+    }
+
+    // 删除
+    const idsToDelete = toDelete.map(f => f.id)
+    const { error: deleteError } = await supabase
+      .from('farms')
+      .delete()
+      .in('id', idsToDelete)
+
+    if (deleteError) return res.status(400).json({ message: "删除失败" })
+
+    res.json({
+      message: "清理完成",
+      deleted: toDelete.map(f => f.land_no),
+      kept: toKeep.map(f => f.land_no)
+    })
   } catch (err) {
     res.status(500).json({ message: "服务器错误" })
   }

@@ -229,10 +229,11 @@ const claiming = ref(false)
 const claimed = ref(false)
 const claimingLoading = ref(false)
 const claimFormRef = ref<FormInstance>()
+const currentFarmInfo = ref<FarmInfo | null>(null)
 
 // 计算属性：当前选中的认养信息
 const farmInfo = computed(() => {
-  return farms.value[selectedFarmIndex.value] || null
+  return currentFarmInfo.value || farms.value[selectedFarmIndex.value] || null
 })
 
 const claimForm = ref({
@@ -262,26 +263,37 @@ onMounted(() => {
 })
 
 const loadFarmInfo = async () => {
-  // 先从localStorage获取
+  // 先从localStorage获取farmInfo
   const farmStr = localStorage.getItem('farmInfo')
   if (farmStr && farmStr !== 'undefined' && farmStr !== 'null') {
     try {
-      farmInfo.value = JSON.parse(farmStr)
+      currentFarmInfo.value = JSON.parse(farmStr)
     } catch (e) {
-      farmInfo.value = null
+      currentFarmInfo.value = null
     }
-    return
   }
 
-  // 如果有token，尝试从API获取
+  // 如果有token，尝试从API获取所有农场
   const token = localStorage.getItem('token')
   if (token && user.value) {
     try {
       const res = await getUserFarms(user.value.id, token)
       if (res.farms && res.farms.length > 0) {
         farms.value = res.farms
-        selectedFarmIndex.value = 0
-        localStorage.setItem('farmInfo', JSON.stringify(res.farms[0]))
+        // 如果当前没有选中农场，选择第一个
+        if (!currentFarmInfo.value) {
+          currentFarmInfo.value = res.farms[0]
+        } else {
+          // 找到当前选中的农场
+          const idx = res.farms.findIndex(f => f.id === currentFarmInfo.value?.id)
+          if (idx >= 0) {
+            selectedFarmIndex.value = idx
+          } else {
+            currentFarmInfo.value = res.farms[0]
+          }
+        }
+        // 更新localStorage
+        localStorage.setItem('farmInfo', JSON.stringify(currentFarmInfo.value))
       } else {
         // 没有认养记录，显示领取页面
         claiming.value = true
@@ -310,23 +322,24 @@ const handleClaim = async () => {
     // 调用分配田地API
     const res = await allocateLand(user.value.id, claimForm.value.orderNo, token)
 
-    // 创建本地证书数据
-    const newFarm = {
-      id: res.farm_id || 'local-' + Date.now(),
-      land_no: 'TY-' + Math.random().toString(36).slice(2, 10).toUpperCase(),
-      area: claimForm.value.area,
-      address: claimForm.value.address,
-      year: currentYear,
-      ddc_id: res.ddc_id || generateDdcId(),
-      created_at: new Date().toISOString()
+    // 使用API返回的农场数据
+    const newFarm: FarmInfo = {
+      id: res.farm.id,
+      land_no: res.farm.land_no,
+      area: res.farm.area,
+      address: res.farm.address,
+      year: res.farm.year,
+      ddc_id: res.farm.ddc_id,
+      created_at: res.farm.created_at
     }
 
     // 添加到认养列表
     farms.value.push(newFarm)
     selectedFarmIndex.value = farms.value.length - 1
+    currentFarmInfo.value = newFarm
     localStorage.setItem('farmInfo', JSON.stringify(newFarm))
     claimed.value = true
-    claiming.value = false  // 重置claiming状态
+    claiming.value = false
 
     ElMessage.success('证书领取成功！')
   } catch (error: any) {
