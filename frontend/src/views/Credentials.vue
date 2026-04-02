@@ -298,8 +298,7 @@ const loadFarmInfo = async () => {
         // 没有认养记录，显示领取页面
         claiming.value = true
       }
-    } catch (error) {
-      console.error('Failed to load farm info:', error)
+    } catch {
       claiming.value = true
     }
   }

@@ -15,7 +15,7 @@ const api = axios.create({
 api.interceptors.response.use(
   (response: AxiosResponse) => response.data,
   error => {
-    console.error('API Error:', error)
+    // 错误已在调用处处理，此处仅转发
     return Promise.reject(error)
   }
 )
